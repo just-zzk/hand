@@ -1,82 +1,110 @@
-# 嵌入式手势识别控制系统
+# Hand Gesture Recognition Control System
 
-基于 MediaPipe + KNN 的嵌入式视觉手势识别控制系统，运行于嵌入式 Linux 开发板。
+Real-time hand gesture recognition based on **MediaPipe + KNN**, designed for embedded deployment on Raspberry Pi.
 
-## 功能
+![Gesture Demo](graph/confusion_matrix_v2.png)
 
-- 摄像头实时采集手部图像
-- MediaPipe Hands 提取 21 个手部关键点
-- 归一化 + 距离/角度特征工程
-- KNN 分类器识别 8 种手势（数字1-5、OK、点赞、握拳）
-- GPIO 控制 LED、风扇、蜂鸣器等外设
-- 连续帧确认防误触发
+## Features
 
-## 项目结构
+- **8 Gesture Classes**: 1, 2, 3, 4, 5, OK, Good (👍), Fist (✊)
+- **Real-time Pipeline**: Camera → MediaPipe Hand Landmarks → Feature Extraction → KNN Classification → GPIO Control
+- **English UI**: OpenCV overlay with gesture name, FPS, and confidence
+- **GPIO Control**: LED, Fan, Buzzer triggered by recognized gestures
+- **Anti-jitter**: 5-frame majority vote smoothing + thumb-angle guard for 4↔5 disambiguation
+- **Cross-platform**: Raspberry Pi (RPi.GPIO) or PC (mock GPIO)
 
-```
-├── src/                    # 源代码
-│   ├── capture/            # 图像采集模块
-│   ├── detection/          # MediaPipe 关键点检测
-│   ├── features/           # 特征提取与归一化
-│   ├── classifier/         # KNN 分类器
-│   ├── control/            # GPIO 外设控制
-│   └── main.py             # 主程序入口
-├── data/
-│   ├── raw/                # 原始手势图片
-│   ├── processed/          # 处理后的特征数据
-│   └── models/             # 训练好的模型
-├── experiments/            # 五个实验脚本
-├── scripts/
-│   ├── collect_data.py     # 数据采集
-│   └── train.py            # 模型训练
-├── config/config.yaml      # 配置文件
-└── requirements.txt        # Python 依赖
-```
-
-## 快速开始
-
-### 1. 安装依赖
+## Quick Start
 
 ```bash
+# 1. Install dependencies
 pip install -r requirements.txt
+
+# 2. Run the system
+python src/main.py
+
+# Press 'q' to quit.
 ```
 
-### 2. 采集数据
+## Project Structure
 
-```bash
-python scripts/collect_data.py --gesture 数字1 --count 400
+```
+├── src/                    # Source code
+│   ├── main.py             # Real-time pipeline entry
+│   ├── capture/            # Camera capture (OpenCV)
+│   ├── detection/          # MediaPipe HandLandmarker wrapper
+│   ├── features/           # Feature extraction (distance + angle + finger states)
+│   ├── classifier/         # KNN classifier (scikit-learn)
+│   └── control/            # GPIO peripheral control
+├── scripts/                # Utility scripts
+│   ├── train_hagrid.py     # Train KNN from HaGRID landmarks
+│   ├── convert_hagrid.py   # Convert HaGRID annotations → features
+│   ├── export_pictures.py  # Export hand skeleton visualizations
+│   └── deploy_pi.py        # Package for Raspberry Pi deployment
+├── data/
+│   └── models/
+│       └── knn_model.pkl   # Trained KNN model (99.0% accuracy)
+├── graph/                  # Training visualizations
+├── config/                 # YAML configuration
+└── assets/mediapipe/       # MediaPipe model files
 ```
 
-### 3. 训练模型
+## Performance
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | **99.0%** (HaGRID v2 test set) |
+| Cross-validation | 99.07% (±0.18%) |
+| K-value | K=3 (distance-weighted) |
+| Features | 32-dimensional (distance + angle + finger states + thumb) |
+| Training samples | 32,000 (8 classes × 4,000) |
+
+## Raspberry Pi Deployment
 
 ```bash
-python scripts/train.py --k 5 --feature all
-```
+# Package for Pi
+python scripts/deploy_pi.py --output pi_deploy
 
-### 4. 运行系统
+# Copy to Pi
+scp -r pi_deploy/* pi@raspberrypi:~/gesture-system/
 
-```bash
+# On Pi:
+cd ~/gesture-system
+pip install -r requirements-pi.txt
 python src/main.py
 ```
 
-## 手势控制映射
+### GPIO Wiring (BCM)
+```
+LED    → GPIO 17
+Fan    → GPIO 18
+Buzzer → GPIO 27
+```
 
-| 手势 | 控制动作 |
-|------|---------|
-| 数字1 | LED 打开 |
-| 数字2 | LED 关闭 |
-| 数字3 | 风扇启动 |
-| 数字4 | 风扇停止 |
-| OK手势 | 蜂鸣器鸣叫 |
-| 点赞 | 欢迎模式 |
-| 握拳 | 全部关闭 |
+## Dataset
 
-## 实验
+Trained on [HaGRID v2](https://github.com/hukenovs/hagrid) (HAnd Gesture Recognition Image Dataset) by SberDevices.
 
-| 编号 | 实验内容 |
-|------|---------|
-| 实验一 | MediaPipe 关键点检测 |
-| 实验二 | KNN 分类性能 |
-| 实验三 | 特征选择对比 |
-| 实验四 | 实时识别测试 |
-| 实验五 | 外设控制测试 |
+- 1,086,158 FullHD images, 33 gesture classes, 65,977 subjects
+- Pre-computed MediaPipe 21-hand-landmarks used for feature extraction
+- License: CC BY-SA 4.0
+
+**Citation:**
+> Nuzhdin et al., "HaGRIDv2: 1M Images for Static and Dynamic Hand Gesture Recognition", arXiv:2412.01508, 2024.
+> Kapitanov et al., "HaGRID — HAnd Gesture Recognition Image Dataset", WACV 2024.
+
+## Gesture → Action Mapping
+
+| Gesture | Display | GPIO Action |
+|---------|---------|-------------|
+| Index up | 1 | LED ON |
+| Two fingers | 2 | LED OFF |
+| Three fingers | 3 | Fan ON |
+| Four fingers | 4 | Fan OFF |
+| Five fingers | 5 | Buzzer beep |
+| OK sign | OK | Buzzer beep |
+| Thumbs up | Good | Welcome mode (LED flash) |
+| Fist | Fist | All OFF |
+
+## License
+
+Apache 2.0 (MediaPipe components) + Project code.
