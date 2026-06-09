@@ -12,10 +12,11 @@ class FeatureExtractor:
     """
     手势特征提取器
 
-    提取三类特征:
-    1. 归一化关键点坐标（相对手腕）
-    2. 指尖间距离特征
-    3. 关节弯曲角度特征
+    提取四类特征:
+    1. 指尖间距离特征 (10维 + 5维到腕)
+    2. 关节弯曲角度特征 (10维)
+    3. 手指开合状态 (4维, 距离比法, 兼容2D/3D)
+    4. 拇指专用连续特征 (3维)
     """
 
     # 手指关节定义: (指尖, 远端指间关节, 近端指间关节, 掌指关节)
@@ -146,6 +147,74 @@ class FeatureExtractor:
             angles.extend([ang_pip, ang_mcp])
         return np.array(angles)
 
+    # ---------- 手指状态特征 (距离比法, 兼容2D/3D) ----------
+
+    # MCP关节索引 (每个手指的掌指关节)
+    FINGER_MCP = {"thumb": 2, "index": 5, "middle": 9, "ring": 13, "pinky": 17}
+
+    # 距离比阈值: tip_to_wrist / mcp_to_wrist >= 此值 → open
+    OPEN_RATIO_THRESHOLD = 0.85
+
+    def _finger_open_ratio(self, tip_idx: int, mcp_idx: int,
+                           landmarks: List[Tuple[float, float, float]]) -> float:
+        """
+        计算指尖-腕距 / MCP-腕距 的比值
+
+        伸直时 tip 比 mcp 离腕更远 → 比值 > 1.0
+        弯曲时 tip 靠近手腕 → 比值 < 0.7
+        """
+        wrist = np.array(landmarks[0])
+        tip = np.array(landmarks[tip_idx])
+        mcp = np.array(landmarks[mcp_idx])
+        tip_dist = np.linalg.norm(tip - wrist)
+        mcp_dist = np.linalg.norm(mcp - wrist)
+        if mcp_dist < 1e-8:
+            return 0.0
+        return tip_dist / mcp_dist
+
+    def finger_states(self, landmarks: List[Tuple[float, float, float]]) -> np.ndarray:
+        """
+        判断食指/中指/无名指/小指的张开/闭合状态（拇指由 thumb_features 独立处理）
+
+        用 tip_to_wrist / MCP_to_wrist 距离比 (>0.85=open)
+        兼容 2D(HaGRID训练) 和 3D(实时MediaPipe)
+
+        Returns:
+            [index, middle, ring, pinky]  (0.0=closed, 1.0=open) — 4维
+        """
+        states = []
+        for finger_name in ["index", "middle", "ring", "pinky"]:
+            joints = self.FINGER_JOINTS[finger_name]
+            mcp_idx = self.FINGER_MCP[finger_name]
+            ratio = self._finger_open_ratio(joints[0], mcp_idx, landmarks)
+            states.append(1.0 if ratio >= self.OPEN_RATIO_THRESHOLD else 0.0)
+        return np.array(states, dtype=np.float32)
+
+    # ---------- 拇指专用特征 (距离比，兼容2D) ----------
+
+    def thumb_features(self, landmarks: List[Tuple[float, float, float]]) -> np.ndarray:
+        """
+        拇指伸展连续特征（2D/3D通用，距离比法）
+
+        Returns:
+            [thumb_tip_to_index_mcp_ratio, thumb_tip_to_pinky_mcp_ratio, thumb_open_ratio]
+            全部经过尺度归一化
+        """
+        wrist = np.array(landmarks[0])
+        scale = np.linalg.norm(np.array(landmarks[9]) - wrist) + 1e-8
+
+        thumb_tip = np.array(landmarks[4])
+        index_mcp = np.array(landmarks[5])
+        pinky_mcp = np.array(landmarks[17])
+
+        dist_to_index = np.linalg.norm(thumb_tip - index_mcp) / scale
+        dist_to_pinky = np.linalg.norm(thumb_tip - pinky_mcp) / scale
+
+        # 拇指 open ratio (用相同距离比逻辑)
+        thumb_ratio = self._finger_open_ratio(4, 2, landmarks)
+
+        return np.array([dist_to_index, dist_to_pinky, thumb_ratio], dtype=np.float32)
+
     # ---------- 综合特征 ----------
 
     def extract(self, landmarks: List[Tuple[float, float, float]],
@@ -158,7 +227,7 @@ class FeatureExtractor:
             feature_set: 特征集类型
                 - "distance": 仅距离特征 (15维)
                 - "angle":    仅角度特征 (10维)
-                - "all":      全部特征 (25维)
+                - "all":      全部特征 (32维: 距离15 + 角度10 + 手指状态4 + 拇指3)
 
         Returns:
             特征向量
@@ -173,7 +242,11 @@ class FeatureExtractor:
             features.extend(wrist_dist.tolist())
 
         if feature_set in ("angle", "all"):
-            angles = self.finger_angles(landmarks)  # 10维
+            angles = self.finger_angles(landmarks)       # 10维 (PIP+MCP × 5)
+            finger_st = self.finger_states(landmarks)     # 5维 (open/closed × 5)
+            thumb_f = self.thumb_features(landmarks)      # 3维 (thumb extension)
             features.extend(angles.tolist())
+            features.extend(finger_st.tolist())
+            features.extend(thumb_f.tolist())
 
         return np.array(features, dtype=np.float32)

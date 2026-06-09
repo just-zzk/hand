@@ -25,6 +25,19 @@ data/raw/*.jpg
 data/raw/*.png
 data/models/*.pkl
 data/processed/*.npy
+data/annotations.zip
+data/hagrid_annotations/
+
+# 保留关键模型文件
+!data/models/knn_model.pkl
+!data/models/label_map.pkl
+!data/models/version.txt
+
+# 部署生成物
+pi_deploy/
+
+# 无关目录
+creatation/
 
 # 保持目录结构
 !.gitkeep

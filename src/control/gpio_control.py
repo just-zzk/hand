@@ -56,15 +56,16 @@ class GPIOController:
     PIN_FAN = 18       # 风扇
     PIN_BUZZER = 27    # 蜂鸣器
 
-    # 手势→控制动作映射
+    # Gesture → action mapping (keys match GESTURE_LABELS in knn_classifier.py)
     GESTURE_ACTIONS = {
-        "数字1":    ("led", "on"),
-        "数字2":    ("led", "off"),
-        "数字3":    ("fan", "on"),
-        "数字4":    ("fan", "off"),
-        "OK手势":   ("buzzer", "beep"),
-        "点赞手势": ("welcome", None),
-        "握拳手势": ("all_off", None),
+        "1":    ("led", "on"),
+        "2":    ("led", "off"),
+        "3":    ("fan", "on"),
+        "4":    ("fan", "off"),
+        "5":    ("buzzer", "beep"),
+        "OK":   ("buzzer", "beep"),
+        "Good": ("welcome", None),
+        "Fist": ("all_off", None),
     }
 
     def __init__(self, confirm_frames: int = 5):
@@ -118,36 +119,36 @@ class GPIOController:
         return desc
 
     def _do_action(self, device: str, cmd: str) -> str:
-        """执行具体设备控制"""
+        """Execute device-specific control action"""
         if device == "led":
             if cmd == "on":
                 GPIO.output(self.PIN_LED, GPIO.HIGH)
                 self._state["led"] = True
-                return "LED 已打开"
+                return "LED ON"
             elif cmd == "off":
                 GPIO.output(self.PIN_LED, GPIO.LOW)
                 self._state["led"] = False
-                return "LED 已关闭"
+                return "LED OFF"
 
         elif device == "fan":
             if cmd == "on":
                 GPIO.output(self.PIN_FAN, GPIO.HIGH)
                 self._state["fan"] = True
-                return "风扇 已启动"
+                return "Fan ON"
             elif cmd == "off":
                 GPIO.output(self.PIN_FAN, GPIO.LOW)
                 self._state["fan"] = False
-                return "风扇 已停止"
+                return "Fan OFF"
 
         elif device == "buzzer":
             if cmd == "beep":
                 GPIO.output(self.PIN_BUZZER, GPIO.HIGH)
                 time.sleep(0.3)
                 GPIO.output(self.PIN_BUZZER, GPIO.LOW)
-                return "蜂鸣器 鸣叫"
+                return "Buzzer beep"
 
         elif device == "welcome":
-            # 欢迎模式：LED闪烁 + 蜂鸣器短鸣
+            # Welcome mode: LED flash + buzzer chirp
             for _ in range(3):
                 GPIO.output(self.PIN_LED, GPIO.HIGH)
                 GPIO.output(self.PIN_BUZZER, GPIO.HIGH)
@@ -155,7 +156,7 @@ class GPIOController:
                 GPIO.output(self.PIN_LED, GPIO.LOW)
                 GPIO.output(self.PIN_BUZZER, GPIO.LOW)
                 time.sleep(0.15)
-            return "欢迎模式 已触发"
+            return "Welcome mode"
 
         elif device == "all_off":
             GPIO.output(self.PIN_LED, GPIO.LOW)
@@ -163,9 +164,9 @@ class GPIOController:
             GPIO.output(self.PIN_BUZZER, GPIO.LOW)
             self._state["led"] = False
             self._state["fan"] = False
-            return "所有设备 已关闭"
+            return "All OFF"
 
-        return f"未知指令: {device}/{cmd}"
+        return f"Unknown: {device}/{cmd}"
 
     def cleanup(self):
         """清理GPIO资源"""

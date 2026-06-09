@@ -21,16 +21,16 @@ class KNNClassifier:
     - 模型持久化: save / load
     """
 
-    # 手势标签映射
+    # Gesture label mapping (English for OpenCV display compatibility)
     GESTURE_LABELS = {
-        0: "数字1",
-        1: "数字2",
-        2: "数字3",
-        3: "数字4",
-        4: "数字5",
-        5: "OK手势",
-        6: "点赞手势",
-        7: "握拳手势",
+        0: "1",
+        1: "2",
+        2: "3",
+        3: "4",
+        4: "5",
+        5: "OK",
+        6: "Good",
+        7: "Fist",
     }
 
     def __init__(self, k: int = 5):
@@ -100,8 +100,8 @@ class KNNClassifier:
         return int(label), float(confidence)
 
     def get_label_name(self, label: int) -> str:
-        """获取手势名称"""
-        return self.GESTURE_LABELS.get(label, f"未知手势({label})")
+        """Get gesture display name"""
+        return self.GESTURE_LABELS.get(label, f"Unknown({label})")
 
     def save(self, path: str):
         """保存模型到文件"""

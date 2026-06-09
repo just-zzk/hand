@@ -1,0 +1,266 @@
+================================================================================
+  Gesture Recognition Control System — Project Summary
+  Embedded Hand Gesture Recognition Based on MediaPipe + KNN
+================================================================================
+
+Generated: 2026-06-09
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+A real-time hand gesture recognition system that uses a USB camera to capture
+hand images, extracts 21 hand landmarks via MediaPipe, computes distance/angle
+features, classifies 8 gestures with a KNN model, and controls GPIO peripherals
+(LED, fan, buzzer) on embedded Linux boards (e.g. Raspberry Pi).
+
+8 Gesture Classes:
+  "1"     — index finger up
+  "2"     — two fingers up
+  "3"     — three fingers up
+  "4"     — four fingers up
+  "5"     — five fingers up (palm)
+  "OK"    — OK sign
+  "Good"  — thumbs up
+  "Fist"  — closed fist
+
+================================================================================
+2. TECH STACK
+================================================================================
+
+Language:         Python 3.11+
+Computer Vision:  OpenCV 4.10+          (camera capture, rendering)
+Hand Detection:   MediaPipe 0.10.35     (21-point hand landmark model)
+                                        (HandLandmarker via mediapipe.tasks API)
+Numerics:         NumPy 1.26+           (array ops, feature vectors)
+ML Framework:     scikit-learn 1.5+     (KNN classifier, StandardScaler,
+                                         train_test_split, cross_val_score)
+Config:           PyYAML 6.0+           (config.yaml parsing)
+Visualization:    Matplotlib 3.7+       (experiment result plotting)
+GPIO:             RPi.GPIO (Raspberry Pi) or mock GPIO (dev)
+
+Dataset:          HaGRID v2 (SberDevices)
+                  - 1,086,158 FullHD images, 33 gesture classes
+                  - Pre-computed MediaPipe 21-landmark annotations
+                  - Downloaded: annotations.zip (719 MB → 1.1 GB JSON)
+                  - Used 8 target classes, up to 4000 samples each
+
+================================================================================
+3. PROJECT STRUCTURE
+================================================================================
+
+project/
+├── src/                          # Source code
+│   ├── __init__.py
+│   ├── main.py                   # Main entry — real-time pipeline
+│   ├── capture/
+│   │   ├── __init__.py
+│   │   └── camera.py             # USB camera capture (cv2.VideoCapture)
+│   ├── detection/
+│   │   ├── __init__.py
+│   │   └── hand_detector.py      # MediaPipe HandLandmarker wrapper
+│   ├── features/
+│   │   ├── __init__.py
+│   │   └── extractor.py          # Feature extraction (normalize + distance + angle)
+│   ├── classifier/
+│   │   ├── __init__.py
+│   │   └── knn_classifier.py     # KNN classifier with save/load
+│   └── control/
+│       ├── __init__.py
+│       └── gpio_control.py       # GPIO device control (LED, fan, buzzer)
+│
+├── scripts/                      # Utility scripts
+│   ├── collect_data.py           # Manual data collection via camera
+│   ├── train.py                  # Original training script (from images)
+│   ├── convert_hagrid.py         # Convert HaGRID annotations → features
+│   └── train_hagrid.py           # Train KNN from HaGRID landmarks
+│
+├── data/                         # Data & models
+│   ├── raw/                      # Raw gesture images (.gitkeep)
+│   ├── processed/                # Extracted feature vectors
+│   │   ├── X_all.npy             # Features
+│   │   ├── y_all.npy             # Labels
+│   │   └── label_map.pkl         # Label mapping
+│   ├── models/
+│   │   ├── knn_model.pkl         # Trained KNN classifier
+│   │   └── label_map.pkl         # Label name mapping
+│   └── hagrid_annotations/       # HaGRID annotation JSONs (train/val/test)
+│
+├── config/
+│   └── config.yaml               # System configuration
+│
+├── experiments/                  # Five experiment scripts
+│   ├── exp1_detection_test.py
+│   ├── exp2_knn_performance.py
+│   ├── exp3_feature_selection.py
+│   ├── exp4_realtime_test.py
+│   └── exp5_control_test.py
+│
+├── requirements.txt              # Python dependencies
+├── hand_landmarker.task          # MediaPipe HandLandmarker model bundle
+├── hand_landmark_lite.tflite     # Legacy TFLite model (unused with new API)
+├── hand_landmark_full.tflite     # Legacy TFLite model (unused with new API)
+└── package.json                  # NPM package metadata (MediaPipe JS side)
+
+================================================================================
+4. PIPELINE (REAL-TIME LOOP)
+================================================================================
+
+  Camera (cv2.VideoCapture)
+       │
+       ▼
+  [Skip every 2nd frame for performance]
+       │
+       ▼
+  HandDetector (MediaPipe HandLandmarker)
+       │  21 landmarks: (x, y, z) per point
+       ▼
+  FeatureExtractor
+       │  Normalize (wrist origin + scale)
+       │  + Fingertip distances (10 dims)
+       │  + Fingertip-to-wrist distances (5 dims)
+       │  + Finger joint angles (10 dims)
+       │  = 25-dimensional feature vector
+       ▼
+  KNNClassifier (K=3, distance-weighted)
+       │  Predict gesture label
+       │  5-frame majority-vote smoothing (anti-jitter)
+       ▼
+  GPIOController
+       │  Consecutive frame confirmation (5 frames)
+       │  Execute device action
+       ▼
+  Display (cv2.imshow)
+       │  Overlay: landmarks, gesture name, FPS
+
+================================================================================
+5. FEATURE ENGINEERING (25 dimensions)
+================================================================================
+
+Feature set "all" = distance + angle features.
+
+Distance features (15 dims):
+  - 10 pairwise fingertip distances: C(5,2) between thumb,index,middle,ring,pinky tips
+  - 5 fingertip-to-wrist distances
+
+Angle features (10 dims):
+  - 5 fingers × 2 joints (PIP angle + MCP angle) each, in degrees
+  - Uses 3-point cosine angle: a-b-c where b is the joint vertex
+
+All features computed AFTER normalization:
+  - Translate wrist to origin
+  - Divide by wrist-to-middle-MCP distance (scale invariant)
+
+================================================================================
+6. KNN MODEL DETAILS
+================================================================================
+
+Algorithm:     k-Nearest Neighbors (scikit-learn KNeighborsClassifier)
+K:             3
+Weighting:     distance (closer neighbors weigh more)
+Metric:        Euclidean
+Preprocessing: StandardScaler (zero mean, unit variance)
+Training data: 32,000 samples (8 classes × 4000 samples) from HaGRID v2
+Test split:    20% stratified (6400 test samples)
+
+Performance:
+  Accuracy:              99.02%
+  Macro F1:              0.99
+  5-fold CV:             99.00% (±0.14%)
+  "4" vs "5" confusion:  0.25% (2/800)
+
+K-value comparison:
+  K=1:  98.97%
+  K=3:  99.02%  ← best
+  K=5:  99.00%
+  K=7:  98.92%
+
+================================================================================
+7. KEY DESIGN DECISIONS
+================================================================================
+
+a) HaGRID Dataset Instead of Manual Collection
+   - Downloaded pre-computed MediaPipe landmarks from SberDevices HaGRID v2
+   - annotations.zip (719 MB) → extracted JSON per gesture class
+   - Landmarks are (x, y) 2D; z padded to 0
+   - Avoids downloading 1.5 TB of images and re-running MediaPipe detection
+
+b) English-Only UI
+   - OpenCV cv2.putText() does not support CJK characters on Windows
+   - All labels use ASCII: "1", "2", "3", "4", "5", "OK", "Good", "Fist"
+   - GPIO return strings also in English ("LED ON", "Fan OFF", etc.)
+
+c) Frame Skipping (skip=2)
+   - MediaPipe detection runs on every 2nd frame
+   - Intermediate frames reuse the last detection result
+   - Landmarks still drawn every frame (cheap operation)
+   - Effectively doubles perceived frame rate
+
+d) 5-Frame Majority Vote Smoothing
+   - deque(maxlen=5) sliding window of recent predictions
+   - Displayed label = most common prediction in window
+   - Eliminates single-frame flicker / misclassification jitter
+
+e) K=3 vs K=5
+   - Cross-validation showed K=3 slightly better (99.02% vs 99.00%)
+   - Fewer neighbors = sharper decision boundaries between similar gestures
+
+f) MediaPipe Tasks API Migration
+   - Original code used legacy `mp.solutions.hands` (removed in 0.10.x)
+   - Migrated to `mediapipe.tasks.python.vision.HandLandmarker`
+   - Requires `.task` model bundle (downloaded from Google Cloud Storage)
+   - Model: hand_landmarker.task (7.45 MB, float16)
+
+================================================================================
+8. HOW TO RUN
+================================================================================
+
+# 1. Install dependencies
+pip install -r requirements.txt
+
+# 2. (Optional) Download HaGRID annotations
+curl -L -o data/annotations.zip \
+  https://rndml-team-cv.obs.ru-moscow-1.hc.sbercloud.ru/datasets/hagrid_v2/annotations_with_landmarks/annotations.zip
+python -c "import zipfile; zipfile.ZipFile('data/annotations.zip').extractall('data/hagrid_annotations')"
+
+# 3. Convert annotations & train model
+python scripts/train_hagrid.py --k 3 --feature all --max-per-class 4000
+
+# 4. Download MediaPipe model (if not present)
+curl -L -o hand_landmarker.task \
+  https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+
+# 5. Run the system
+python src/main.py                     # Full mode (GPIO control)
+python src/main.py --no-control        # Recognition only
+python src/main.py --skip 1            # Every frame (no skipping)
+
+# Press 'q' to quit.
+
+================================================================================
+9. GESTURE → GPIO ACTION MAPPING
+================================================================================
+
+  Gesture    Display    GPIO Action
+  --------   -------    -----------
+  "1"        1          LED ON
+  "2"        2          LED OFF
+  "3"        3          Fan ON
+  "4"        4          Fan OFF
+  "5"        5          Buzzer beep
+  "OK"       OK         Buzzer beep
+  "Good"     Good       Welcome mode (LED flash × 3 + buzzer chirp)
+  "Fist"     Fist       All OFF
+
+================================================================================
+10. KNOWN LIMITATIONS & FUTURE WORK
+================================================================================
+
+- HaGRID landmarks are 2D (no z coordinate); real MediaPipe outputs (x,y,z).
+  Real-time detection uses full 3D, which may cause slight distribution shift.
+- "Good" (thumbs up) has lowest F1 (0.98) — thumb angle is hard to capture.
+- No dynamic gesture support (only static frames).
+- GPIO uses mock on non-Raspberry Pi platforms (dev-friendly, no hardware needed).
+- Single-hand only (max_num_hands=1).
+- Could add: model quantization, TensorRT acceleration, multi-hand support,
+  dynamic gesture recognition, calibration mode for new users.

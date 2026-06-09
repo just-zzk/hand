@@ -3,13 +3,16 @@
 基于 MediaPipe Hands 提取21个手部关键点
 """
 
+import os
 import cv2
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision
 from typing import List, Optional, Tuple
 
 
 class HandDetector:
-    """MediaPipe 手部关键点检测器"""
+    """MediaPipe 手部关键点检测器 (使用 mediapipe.tasks API)"""
 
     # MediaPipe Hands 21个关键点索引与名称
     LANDMARK_NAMES = {
@@ -20,6 +23,26 @@ class HandDetector:
         13: "RING_FINGER_MCP", 14: "RING_FINGER_PIP", 15: "RING_FINGER_DIP", 16: "RING_FINGER_TIP",
         17: "PINKY_MCP", 18: "PINKY_PIP", 19: "PINKY_DIP", 20: "PINKY_TIP",
     }
+
+    # 默认模型路径（搜索多个可能位置）
+    _MODEL_CANDIDATES = [
+        os.path.join("assets", "mediapipe", "hand_landmarker.task"),
+        os.path.join("assets", "mediapipe", "hand_landmark_lite.tflite"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "assets", "mediapipe", "hand_landmarker.task"),
+        os.path.join(os.path.dirname(__file__), "..", "..", "assets", "mediapipe", "hand_landmark_lite.tflite"),
+        "hand_landmarker.task",
+        "hand_landmark_lite.tflite",
+    ]
+
+    @staticmethod
+    def _find_model() -> str:
+        for candidate in HandDetector._MODEL_CANDIDATES:
+            if os.path.exists(candidate):
+                return os.path.abspath(candidate)
+        raise FileNotFoundError(
+            "未找到 MediaPipe Hands 模型文件 (hand_landmark_lite.tflite)。"
+            "请将模型文件放到项目根目录。"
+        )
 
     def __init__(self,
                  static_image_mode: bool = False,
@@ -35,14 +58,20 @@ class HandDetector:
             min_detection_confidence: 检测置信度阈值
             min_tracking_confidence:  跟踪置信度阈值
         """
-        self.mp_hands = mp.solutions.hands
-        self.mp_draw = mp.solutions.drawing_utils
-        self.hands = self.mp_hands.Hands(
-            static_image_mode=static_image_mode,
-            max_num_hands=max_num_hands,
-            min_detection_confidence=min_detection_confidence,
+        self.max_num_hands = max_num_hands
+        self.min_detection_confidence = min_detection_confidence
+        self.min_tracking_confidence = min_tracking_confidence
+
+        model_path = self._find_model()
+        base_options = mp_python.BaseOptions(model_asset_path=model_path)
+        options = vision.HandLandmarkerOptions(
+            base_options=base_options,
+            running_mode=vision.RunningMode.IMAGE,
+            num_hands=max_num_hands,
+            min_hand_detection_confidence=min_detection_confidence,
             min_tracking_confidence=min_tracking_confidence,
         )
+        self.detector = vision.HandLandmarker.create_from_options(options)
 
     def detect(self, image) -> Tuple[bool, Optional[List[Tuple[float, float, float]]]]:
         """
@@ -57,16 +86,15 @@ class HandDetector:
                 landmarks - 21个关键点列表 [(x, y, z), ...] 或 None
         """
         rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        results = self.hands.process(rgb_image)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb_image)
+        result = self.detector.detect(mp_image)
 
-        if not results.multi_hand_landmarks:
+        if not result.hand_landmarks:
             return False, None
 
         # 取第一只手的关键点
-        hand_landmarks = results.multi_hand_landmarks[0]
-        landmarks = []
-        for lm in hand_landmarks.landmark:
-            landmarks.append((lm.x, lm.y, lm.z))
+        hand_landmarks = result.hand_landmarks[0]
+        landmarks = [(lm.x, lm.y, lm.z) for lm in hand_landmarks]
 
         return True, landmarks
 
@@ -75,7 +103,7 @@ class HandDetector:
         return landmarks[index]
 
     def draw_landmarks(self, image, landmarks: List):
-        """在图像上绘制关键点和连线（需转换为mediapipe格式）"""
+        """在图像上绘制关键点和连线"""
         h, w, _ = image.shape
         for i, (x, y, z) in enumerate(landmarks):
             cx, cy = int(x * w), int(y * h)
@@ -85,4 +113,4 @@ class HandDetector:
 
     def close(self):
         """释放资源"""
-        self.hands.close()
+        self.detector.close()
