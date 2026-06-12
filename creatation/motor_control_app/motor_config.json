@@ -1,0 +1,10 @@
+{
+  "channel_0_boundary": {
+    "left": 0,
+    "right": 90
+  },
+  "channel_1_boundary": {
+    "left": 0,
+    "right": 88
+  }
+}

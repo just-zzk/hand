@@ -36,9 +36,6 @@ data/hagrid_annotations/
 # 部署生成物
 pi_deploy/
 
-# 无关目录
-creatation/
-
 # 保持目录结构
 !.gitkeep
 
