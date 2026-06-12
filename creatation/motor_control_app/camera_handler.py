@@ -72,12 +72,14 @@ def list_available_cameras(max_devices=6):
     print(f"[Camera Detection] 检测完成: {len(result)} 个设备")
     return result
 
+# ── RKNN Runtime (RK3588 NPU) ─────────────────────
 try:
-    import onnxruntime as ort
-    ONNXRUNTIME_AVAILABLE = True
+    from rknnlite.api import RKNNLite
+    RKNN_AVAILABLE = True
+    print("[YOLO] RKNN Runtime (NPU) 已加载")
 except ImportError:
-    ONNXRUNTIME_AVAILABLE = False
-    print("[YOLO] onnxruntime 未安装，将使用 CPU 推理")
+    RKNN_AVAILABLE = False
+    print("[YOLO] rknn-toolkit-lite2 未安装，回退到 CPU")
 
 # 获取当前文件所在目录
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -96,7 +98,7 @@ COLORMAP_OPTIONS = {
 }
 
 # ─── YOLOv5 配置 ─────────────────────────────────────────
-YOLO_MODEL_PATH = os.path.join(BASE_DIR, "yolov5s.onnx")  # ONNX模型路径（绝对路径）
+YOLO_MODEL_PATH = os.path.join(BASE_DIR, "yolov5s.rknn")  # RKNN模型（NPU加速）
 YOLO_INPUT_SIZE = 640             # 输入尺寸
 YOLO_CONF_THRESH = 0.5           # 置信度阈值
 YOLO_NMS_THRESH = 0.45           # NMS阈值
@@ -123,54 +125,87 @@ COLORS = np.random.randint(0, 255, size=(len(YOLO_CLASSES), 3), dtype=np.uint8)
 
 
 class YOLOv5Detector:
-    """YOLOv5 ONNX 推理器（支持 GPU 加速）"""
+    """YOLOv5 RKNN 推理器 — 在 RK3588 NPU 上运行"""
+
     def __init__(self, model_path=YOLO_MODEL_PATH):
         self.model_path = model_path
-        self.session = None
+        self.rknn = None
+        self._use_cv2_dnn = False
+        self._last_scale_w = 1.0
+        self._last_scale_h = 1.0
         self.load_model()
 
     def load_model(self):
-        """加载ONNX模型"""
+        """加载 RKNN 模型到 NPU（带 ONNX 自动回退）"""
         if not os.path.exists(self.model_path):
+            # 回退：.rknn 不存在时找 .onnx
+            onnx_fallback = self.model_path.replace(".rknn", ".onnx")
+            if os.path.exists(onnx_fallback):
+                print(f"[YOLO] RKNN 未找到，回退到 ONNX CPU")
+                self._load_onnx(onnx_fallback)
+                return
             print(f"[YOLO] 错误: 模型文件不存在: {self.model_path}")
-            self.session = None
+            self.rknn = None
             return
-        
-        try:
-            if ONNXRUNTIME_AVAILABLE:
-                # 使用 onnxruntime-gpu（会自动调用 CUDA）
-                providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
-                self.session = ort.InferenceSession(
-                    self.model_path,
-                    providers=providers
-                )
-                print(f"[YOLO] 模型加载成功 (GPU加速): {self.model_path}")
+
+        if not RKNN_AVAILABLE:
+            onnx_fallback = self.model_path.replace(".rknn", ".onnx")
+            if os.path.exists(onnx_fallback):
+                self._load_onnx(onnx_fallback)
             else:
-                # 回退到 OpenCV DNN
-                self.session = cv2.dnn.readNetFromONNX(self.model_path)
-                print(f"[YOLO] 模型加载成功 (CPU): {self.model_path}")
+                self.rknn = None
+            return
+
+        try:
+            self.rknn = RKNNLite()
+            ret = self.rknn.load_rknn(self.model_path)
+            if ret != 0:
+                print(f"[YOLO] RKNN 模型加载失败, ret={ret}")
+                self.rknn = None
+                return
+
+            # 初始化 NPU（三核全用）
+            ret = self.rknn.init_runtime(core_mask=RKNNLite.NPU_CORE_AUTO)
+            if ret != 0:
+                print(f"[YOLO] NPU 初始化失败, ret={ret}")
+                self.rknn = None
+                return
+
+            print(f"[YOLO] ✅ RKNN 模型加载成功 (NPU 加速): {self.model_path}")
+
         except Exception as e:
             print(f"[YOLO] 模型加载失败: {e}")
-            self.session = None
+            self.rknn = None
+
+    def _load_onnx(self, onnx_path):
+        """ONNX CPU 回退"""
+        try:
+            self.rknn = cv2.dnn.readNetFromONNX(onnx_path)
+            self._use_cv2_dnn = True
+            print(f"[YOLO] ONNX 回退加载成功 (CPU): {onnx_path}")
+        except Exception as e:
+            print(f"[YOLO] ONNX 回退也失败了: {e}")
+            self.rknn = None
 
     def detect(self, image):
-        """执行推理，返回检测结果"""
-        if self.session is None:
+        """执行 NPU 推理，返回检测结果"""
+        if self.rknn is None:
             return []
-        
+
         try:
-            blob, scale_w, scale_h = self.preprocess(image)
-            
-            if ONNXRUNTIME_AVAILABLE:
-                # onnxruntime 推理
-                outputs = self.session.run(None, {self.session.get_inputs()[0].name: blob})
+            input_data = self.preprocess(image)
+
+            if self._use_cv2_dnn:
+                # OpenCV DNN 回退
+                self.rknn.setInput(input_data)
+                outputs = self.rknn.forward()
             else:
-                # OpenCV DNN 推理
-                self.session.setInput(blob)
-                outputs = self.session.forward()
-            
-            detections = self.postprocess(outputs, image.shape, scale_w, scale_h)
+                # RKNN NPU 推理
+                outputs = self.rknn.inference(inputs=[input_data])
+
+            detections = self.postprocess(outputs, image.shape)
             return detections
+
         except Exception as e:
             import traceback
             print(f"[YOLO] 推理失败: {e}")
@@ -178,77 +213,67 @@ class YOLOv5Detector:
             return []
 
     def preprocess(self, image):
-        """图像预处理：直接缩放到 640x640，不保持宽高比"""
+        """
+        RKNN 预处理：NHWC, uint8, [1, 640, 640, 3]
+        不需要 blobFromImage（量化参数已在转换时 bake 进模型）
+        """
         h, w = image.shape[:2]
-        
-        # 计算缩放比例（用于后处理坐标转换）
-        scale_w = w / YOLO_INPUT_SIZE
-        scale_h = h / YOLO_INPUT_SIZE
-        
-        # 直接缩放到 640x640（YOLOv5 要求精确尺寸）
-        image_resized = cv2.resize(image, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE))
-        
-        # 创建blob（YOLOv5格式）
-        blob = cv2.dnn.blobFromImage(
-            image_resized, 
-            scalefactor=1/255.0, 
-            size=(YOLO_INPUT_SIZE, YOLO_INPUT_SIZE), 
-            mean=(0, 0, 0), 
-            swapRB=True, 
-            crop=False
-        )
-        
-        return blob, scale_w, scale_h
+        self._last_scale_w = w / YOLO_INPUT_SIZE
+        self._last_scale_h = h / YOLO_INPUT_SIZE
 
-    def postprocess(self, output, original_shape, scale_w, scale_h):
-        """后处理：NMS、坐标转换"""
+        img_resized = cv2.resize(image, (YOLO_INPUT_SIZE, YOLO_INPUT_SIZE))
+        input_data = np.expand_dims(img_resized, axis=0)  # NHWC
+
+        if input_data.dtype != np.uint8:
+            input_data = input_data.astype(np.uint8)
+        return input_data
+
+    def postprocess(self, output, original_shape):
+        """后处理：NMS、坐标反算（与 ONNX 版本相同）"""
         orig_h, orig_w = original_shape[:2]
-        boxes = []
-        confidences = []
-        class_ids = []
+        scale_w = self._last_scale_w
+        scale_h = self._last_scale_h
 
-        # onnxruntime 返回 list，取第一个元素
+        boxes, confidences, class_ids = [], [], []
+
         if isinstance(output, list):
             output = output[0]
 
-        # 输出形状: [1, 25195, 85] -> [25195, 85]
         output = output.squeeze(0)
 
-        # YOLOv5 输出格式: [num_detections, 85]
-        # 85 = x_center, y_center, width, height, confidence, class0, class1, ..., class79
         for detection in output:
-            conf = detection[4]
+            conf = float(detection[4])
             if conf < YOLO_CONF_THRESH:
                 continue
 
             class_scores = detection[5:]
-            class_id = np.argmax(class_scores)
-            class_confidence = class_scores[class_id]
+            class_id = int(np.argmax(class_scores))
+            class_confidence = float(class_scores[class_id])
             confidence = conf * class_confidence
 
             if confidence >= YOLO_CONF_THRESH:
-                x_center = detection[0] * scale_w
-                y_center = detection[1] * scale_h
-                box_w = detection[2] * scale_w
-                box_h = detection[3] * scale_h
+                x_center = float(detection[0]) * scale_w
+                y_center = float(detection[1]) * scale_h
+                box_w = float(detection[2]) * scale_w
+                box_h = float(detection[3]) * scale_h
 
                 x1 = int(max(0, x_center - box_w / 2))
                 y1 = int(max(0, y_center - box_h / 2))
                 x2 = int(min(orig_w, x_center + box_w / 2))
                 y2 = int(min(orig_h, y_center + box_h / 2))
 
-                boxes.append([x1, y1, x2-x1, y2-y1])
-                confidences.append(float(confidence))
-                class_ids.append(int(class_id))
+                boxes.append([x1, y1, x2 - x1, y2 - y1])
+                confidences.append(confidence)
+                class_ids.append(class_id)
 
         indices = cv2.dnn.NMSBoxes(boxes, confidences, YOLO_CONF_THRESH, YOLO_NMS_THRESH)
 
         results = []
         if len(indices) > 0:
             for i in indices.flatten():
-                x, y, w, h = boxes[i]
+                x, y, w_box, h_box = boxes[i]
                 results.append({
-                    "box": [x, y, x+w, y+h],
+                    "box": [x, y, x + w_box, y + h_box],
                     "confidence": confidences[i],
                     "class_id": class_ids[i],
                     "class_name": YOLO_CLASSES[class_ids[i]]
@@ -257,29 +282,26 @@ class YOLOv5Detector:
         return results
 
     def draw_detections(self, image, detections):
-        """在图像上绘制检测结果"""
+        """在图像上绘制检测框和标签"""
         for det in detections:
             x1, y1, x2, y2 = det["box"]
             class_name = det["class_name"]
             confidence = det["confidence"]
             class_id = det["class_id"]
-            
-            # 获取颜色
+
             color = [int(c) for c in COLORS[class_id]]
-            
-            # 绘制矩形框
+
             cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
-            
-            # 绘制标签
+
             label = f"{class_name}: {confidence:.2f}"
             label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
             label_y1 = max(y1, label_size[1] + 10)
-            
-            cv2.rectangle(image, (x1, label_y1 - label_size[1] - 10), 
+
+            cv2.rectangle(image, (x1, label_y1 - label_size[1] - 10),
                           (x1 + label_size[0], label_y1), color, -1)
-            cv2.putText(image, label, (x1, label_y1 - 5), 
+            cv2.putText(image, label, (x1, label_y1 - 5),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        
+
         return image
 
 
@@ -327,7 +349,7 @@ class CameraThread(QThread):
     def toggle_detection(self, enable):
         """Toggle YOLO object detection"""
         self.enable_detection = enable
-        if enable and self.detector.session is None:
+        if enable and self.detector.rknn is None:
             self.detector.load_model()
 
     def toggle_gesture(self, enable):
@@ -442,7 +464,7 @@ class CameraThread(QThread):
             # YOLO object detection (on BGR)
             gesture_name = None
             landmarks = None
-            if self.enable_detection and self.detector.session is not None:
+            if self.enable_detection and self.detector.rknn is not None:
                 detections = self.detector.detect(frame)
                 self.detection_signal.emit(detections)
                 frame = self.detector.draw_detections(frame, detections)
