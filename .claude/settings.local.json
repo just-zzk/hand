@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile creatation/motor_control_app/gesture_handler.py)",
+      "Bash(python -m py_compile creatation/motor_control_app/camera_handler.py)",
+      "Bash(python -m py_compile creatation/motor_control_app/main_window.py)",
+      "Bash(python *)"
+    ]
+  }
+}

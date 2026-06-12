@@ -42,6 +42,9 @@ creatation/
 # 保持目录结构
 !.gitkeep
 
+# Claude Code runtime logs
+.reasonix/
+
 # Node
 node_modules/
 
